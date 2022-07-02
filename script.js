@@ -2312,4 +2312,689 @@ const Tag = ({ children, onClick }) => {
   );
 };
 
-// Ended at 7:43 7-1-2022
+const Actor = require("../models/actor");
+const {
+  sendError,
+  uploadImageToCloud,
+  formatActor,
+} = require("../utils/helper");
+const { isValidObjectId } = require("mongoose");
+const cloudinary = require("../cloud");
+const actor = require("../models/actor");
+
+exports.createActor = async (req, res) => {
+  const { name, about, gender } = req.body;
+  const { file } = req;
+
+  const newActor = new Actor({ name, about, gender });
+  if (file) {
+    const { url, public_id } = await uploadImageToCloud(file.path);
+    newActor.avatar = { url, public_id };
+  }
+  await newActor.save();
+  res.status(201).json({ actor: formatActor(newActor) });
+};
+
+// update
+// Things to consider while updating.
+// No.1 - is image file is / avatar is also updating.
+// No.2 - if yes then remove old image before uploading new image / avatar.
+
+exports.updateActor = async (req, res) => {
+  const { name, about, gender } = req.body;
+  const { file } = req;
+  const { actorId } = req.params;
+
+  if (!isValidObjectId(actorId)) return sendError(res, "Invalid request!");
+
+  const actor = await Actor.findById(actorId);
+  if (!actor) return sendError(res, "Invalid request, record not found!");
+
+  const public_id = actor.avatar?.public_id;
+
+  // remove old image if there was one!
+  if (public_id && file) {
+    const { result } = await cloudinary.uploader.destroy(public_id);
+    if (result !== "ok") {
+      return sendError(res, "Could not remove image from cloud!");
+    }
+  }
+
+  // upload new avatar if there is one!
+  if (file) {
+    const { url, public_id } = await uploadImageToCloud(file.path);
+    actor.avatar = { url, public_id };
+  }
+
+  actor.name = name;
+  actor.about = about;
+  actor.gender = gender;
+
+  await actor.save();
+
+  res.status(201).json({ actor: formatActor(actor) });
+};
+
+exports.removeActor = async (req, res) => {
+  const { actorId } = req.params;
+
+  if (!isValidObjectId(actorId)) return sendError(res, "Invalid request!");
+
+  const actor = await Actor.findById(actorId);
+  if (!actor) return sendError(res, "Invalid request, record not found!");
+
+  const public_id = actor.avatar?.public_id;
+
+  // remove old image if there was one!
+  if (public_id) {
+    const { result } = await cloudinary.uploader.destroy(public_id);
+    if (result !== "ok") {
+      return sendError(res, "Could not remove image from cloud!");
+    }
+  }
+
+  await Actor.findByIdAndDelete(actorId);
+
+  res.json({ message: "Record removed successfully." });
+};
+
+exports.searchActor = async (req, res) => {
+  const { name } = req.query;
+  // const result = await Actor.find({ $text: { $search: `"${query.name}"` } });
+  if (!name.trim()) return sendError(res, "Invalid request!");
+  const result = await Actor.find({
+    name: { $regex: name, $options: "i" },
+  });
+
+  const actors = result.map((actor) => formatActor(actor));
+  res.json({ results: actors });
+};
+
+exports.getLatestActors = async (req, res) => {
+  const result = await Actor.find().sort({ createdAt: "-1" }).limit(12);
+
+  const actors = result.map((actor) => formatActor(actor));
+
+  res.json(actors);
+};
+
+exports.getSingleActor = async (req, res) => {
+  const { id } = req.params;
+
+  if (!isValidObjectId(id)) return sendError(res, "Invalid request!");
+
+  const actor = await Actor.findById(id);
+  if (!actor) return sendError(res, "Invalid request, actor not found!", 404);
+  res.json(formatActor(actor));
+};
+
+exports.getActors = async (req, res) => {
+  const { pageNo, limit } = req.query;
+
+  const actors = await Actor.find({})
+    .sort({ createdAt: -1 })
+    .skip(parseInt(pageNo) * parseInt(limit))
+    .limit(parseInt(limit));
+
+  const profiles = actors.map((actor) => formatActor(actor));
+  res.json({
+    profiles,
+  });
+};
+
+const express = require("express");
+const {
+  createActor,
+  updateActor,
+  removeActor,
+  searchActor,
+  getLatestActors,
+  getSingleActor,
+  getActors,
+} = require("../controllers/actor");
+const { isAuth, isAdmin } = require("../middlewares/auth");
+const { uploadImage } = require("../middlewares/multer");
+const { actorInfoValidator, validate } = require("../middlewares/validator");
+const router = express.Router();
+
+router.post(
+  "/create",
+  isAuth,
+  isAdmin,
+  uploadImage.single("avatar"),
+  actorInfoValidator,
+  validate,
+  createActor
+);
+
+router.post(
+  "/update/:actorId",
+  isAuth,
+  isAdmin,
+  uploadImage.single("avatar"),
+  actorInfoValidator,
+  validate,
+  updateActor
+);
+
+router.delete("/:actorId", isAuth, isAdmin, removeActor);
+router.get("/search", isAuth, isAdmin, searchActor);
+router.get("/latest-uploads", isAuth, isAdmin, getLatestActors);
+router.get("/actors", isAuth, isAdmin, getActors);
+router.get("/single/:id", getSingleActor);
+module.exports = router;
+
+const crypto = require("crypto");
+const cloudinary = require("../cloud");
+
+exports.sendError = (res, error, statusCode = 401) => {
+  res.status(statusCode).json({ error });
+};
+
+exports.generateRandomByte = () => {
+  return new Promise((resolve, reject) => {
+    crypto.randomBytes(30, (err, buff) => {
+      if (err) reject(err);
+      const buffString = buff.toString("hex");
+
+      console.log(buffString);
+      resolve(buffString);
+    });
+  });
+};
+
+exports.uploadImageToCloud = async (file) => {
+  const { secure_url: url, public_id } = await cloudinary.uploader.upload(
+    file,
+    { gravity: "face", height: 500, width: 500, crop: "thumb" }
+  );
+
+  return { url, public_id };
+};
+
+exports.formatActor = (actor) => {
+  const { name, gender, about, _id, avatar } = actor;
+  return {
+    id: _id,
+    name,
+    about,
+    gender,
+    avatar: avatar?.url,
+  };
+};
+
+exports.handleNotFound = (req, res) => {
+  this.sendError(res, 'Not found', 404);
+}
+
+const mongoose = require("mongoose");
+
+const actorSchema = mongoose.Schema(
+  {
+    name: {
+      type: String,
+      trim: true,
+      required: true,
+    },
+    about: {
+      type: String,
+      trim: true,
+      required: true,
+    },
+    gender: {
+      type: String,
+      trim: true,
+      required: true,
+    },
+    avatar: {
+      type: Object,
+      url: String,
+      public_id: String,
+    },
+  },
+  { timestamps: true }
+);
+
+actorSchema.index({ name: "text" });
+
+module.exports = mongoose.model("Actor", actorSchema);
+
+const { sendError } = require("../utils/helper");
+const cloudinary = require("../cloud");
+const Movie = require("../models/movie");
+const { isValidObjectId } = require("mongoose");
+
+exports.uploadTrailer = async (req, res) => {
+  const { file } = req;
+  if (!file) return sendError(res, "Video file is missing!");
+
+  const { secure_url: url, public_id } = await cloudinary.uploader.upload(
+    file.path,
+    {
+      resource_type: "video",
+    }
+  );
+  res.status(201).json({ url, public_id });
+};
+
+exports.createMovie = async (req, res) => {
+  const { file, body } = req;
+
+  const {
+    title,
+    storyLine,
+    director,
+    releseDate,
+    status,
+    type,
+    genres,
+    tags,
+    cast,
+    writers,
+    trailer,
+    language,
+  } = body;
+
+  const newMovie = new Movie({
+    title,
+    storyLine,
+    releseDate,
+    status,
+    type,
+    genres,
+    tags,
+    cast,
+    trailer,
+    language,
+  });
+
+  if (director) {
+    if (!isValidObjectId(director))
+      return sendError(res, "Invalid director id!");
+    newMovie.director = director;
+  }
+
+  if (writers) {
+    for (let writerId of writers) {
+      if (!isValidObjectId(writerId))
+        return sendError(res, "Invalid writer id!");
+    }
+
+    newMovie.writers = writers;
+  }
+
+  // uploading poster
+  if (file) {
+    const {
+      secure_url: url,
+      public_id,
+      responsive_breakpoints,
+    } = await cloudinary.uploader.upload(file.path, {
+      transformation: {
+        width: 1280,
+        height: 720,
+      },
+      responsive_breakpoints: {
+        create_derived: true,
+        max_width: 640,
+        max_images: 3,
+      },
+    });
+
+    const finalPoster = { url, public_id, responsive: [] };
+
+    const { breakpoints } = responsive_breakpoints[0];
+    if (breakpoints.length) {
+      for (let imgObj of breakpoints) {
+        const { secure_url } = imgObj;
+        finalPoster.responsive.push(secure_url);
+      }
+    }
+    newMovie.poster = finalPoster;
+  }
+
+  await newMovie.save();
+
+  res.status(201).json({
+    id: newMovie._id,
+    title,
+  });
+};
+
+exports.updateMovieWithoutPoster = async (req, res) => {
+  const { movieId } = req.params;
+
+  if (!isValidObjectId(movieId)) return sendError(res, "Invalid Movie ID!");
+
+  const movie = await Movie.findById(movieId);
+  if (!movie) return sendError(res, "Movie Not Found!", 404);
+
+  const {
+    title,
+    storyLine,
+    director,
+    releseDate,
+    status,
+    type,
+    genres,
+    tags,
+    cast,
+    writers,
+    trailer,
+    language,
+  } = req.body;
+
+  movie.title = title;
+  movie.storyLine = storyLine;
+  movie.tags = tags;
+  movie.releseDate = releseDate;
+  movie.status = status;
+  movie.type = type;
+  movie.genres = genres;
+  movie.cast = cast;
+  movie.trailer = trailer;
+  movie.language = language;
+
+  if (director) {
+    if (!isValidObjectId(director))
+      return sendError(res, "Invalid director id!");
+    movie.director = director;
+  }
+
+  if (writers) {
+    for (let writerId of writers) {
+      if (!isValidObjectId(writerId))
+        return sendError(res, "Invalid writer id!");
+    }
+
+    movie.writers = writers;
+  }
+
+  await movie.save();
+
+  res.json({ message: "Movie is updated", movie });
+};
+
+exports.updateMovieWithPoster = async (req, res) => {
+  const { movieId } = req.params;
+
+  if (!isValidObjectId(movieId)) return sendError(res, "Invalid Movie ID!");
+
+  if (!req.file) return sendError(res, "Movie poster is missing!");
+
+  const movie = await Movie.findById(movieId);
+  if (!movie) return sendError(res, "Movie Not Found!", 404);
+
+  const {
+    title,
+    storyLine,
+    director,
+    releseDate,
+    status,
+    type,
+    genres,
+    tags,
+    cast,
+    writers,
+    trailer,
+    language,
+  } = req.body;
+
+  movie.title = title;
+  movie.storyLine = storyLine;
+  movie.tags = tags;
+  movie.releseDate = releseDate;
+  movie.status = status;
+  movie.type = type;
+  movie.genres = genres;
+  movie.cast = cast;
+  movie.trailer = trailer;
+  movie.language = language;
+
+  if (director) {
+    if (!isValidObjectId(director))
+      return sendError(res, "Invalid director id!");
+    movie.director = director;
+  }
+
+  if (writers) {
+    for (let writerId of writers) {
+      if (!isValidObjectId(writerId))
+        return sendError(res, "Invalid writer id!");
+    }
+
+    movie.writers = writers;
+  }
+
+  // update poster.
+  // removing poster from cloud if there is any.
+  const posterID = movie.poster?.public_id;
+  if (posterID) {
+    const { result } = await cloudinary.uploader.destroy(posterID);
+    if (result !== "ok") {
+      return sendError(res, "Could not update poster at the moment!");
+    }
+  }
+
+  // uploading poster
+  const {
+    secure_url: url,
+    public_id,
+    responsive_breakpoints,
+  } = await cloudinary.uploader.upload(req.file.path, {
+    transformation: {
+      width: 1280,
+      height: 720,
+    },
+    responsive_breakpoints: {
+      create_derived: true,
+      max_width: 640,
+      max_images: 3,
+    },
+  });
+
+  const finalPoster = { url, public_id, responsive: [] };
+
+  const { breakpoints } = responsive_breakpoints[0];
+  if (breakpoints.length) {
+    for (let imgObj of breakpoints) {
+      const { secure_url } = imgObj;
+      finalPoster.responsive.push(secure_url);
+    }
+  }
+
+  movie.poster = finalPoster;
+
+  await movie.save();
+
+  res.json({ message: "Movie is updated", movie });
+};
+
+exports.removeMovie = async (req, res) => {
+  const { movieId } = req.params;
+
+  if (!isValidObjectId(movieId)) return sendError(res, "Invalid Movie ID!");
+
+  const movie = await Movie.findById(movieId);
+  if (!movie) return sendError(res, "Movie Not Found!", 404);
+
+  // check if there is poster or not.
+  // if yes then we need to remove that.
+
+  const posterId = movie.poster?.public_id;
+  if (posterId) {
+    const { result } = await cloudinary.uploader.destroy(posterId);
+    if (result !== "ok")
+      return sendError(res, "Could not remove poster from cloud!");
+  }
+
+  // removing trailer
+  const trailerId = movie.trailer?.public_id;
+  if (!trailerId) return sendError(res, "Could not find trailer in the cloud!");
+  const { result } = await cloudinary.uploader.destroy(trailerId, {
+    resource_type: "video",
+  });
+  if (result !== "ok")
+    return sendError(res, "Could not remove trailer from cloud!");
+
+  await Movie.findByIdAndDelete(movieId);
+
+  res.json({ message: "Movie removed successfully." });
+};
+
+exports.getMovies = async (req, res) => {
+  const { pageNo = 0, limit = 10 } = req.query;
+
+  const movies = await Movie.find({})
+    .sort({ createdAt: -1 })
+    .skip(parseInt(pageNo) * parseInt(limit))
+    .limit(parseInt(limit));
+
+  const results = movies.map((movie) => ({
+    id: movie._id,
+    title: movie.title,
+    poster: movie.poster?.url,
+    genres: movie.genres,
+    status: movie.status,
+  }));
+
+  res.json({ movies: results });
+};
+
+const express = require("express");
+const {
+  uploadTrailer,
+  createMovie,
+  updateMovieWithoutPoster,
+  updateMovieWithPoster,
+  removeMovie,
+  getMovies,
+} = require("../controllers/movie");
+const { isAuth, isAdmin } = require("../middlewares/auth");
+const { parseData } = require("../middlewares/helper");
+const { uploadVideo, uploadImage } = require("../middlewares/multer");
+const { validateMovie, validate } = require("../middlewares/validator");
+const router = express.Router();
+
+router.post(
+  "/upload-trailer",
+  isAuth,
+  isAdmin,
+  uploadVideo.single("video"),
+  uploadTrailer
+);
+router.post(
+  "/create",
+  isAuth,
+  isAdmin,
+  uploadImage.single("poster"),
+  parseData,
+  validateMovie,
+  validate,
+  createMovie
+);
+router.patch(
+  "/update-movie-without-poster/:movieId",
+  isAuth,
+  isAdmin,
+  // parseData,
+  validateMovie,
+  validate,
+  updateMovieWithoutPoster
+);
+router.patch(
+  "/update-movie-with-poster/:movieId",
+  isAuth,
+  isAdmin,
+  uploadImage.single("poster"),
+  parseData,
+  validateMovie,
+  validate,
+  updateMovieWithPoster
+);
+router.delete("/:movieId", isAuth, isAdmin, removeMovie);
+router.get("/movies", isAuth, isAdmin, getMovies);
+
+module.exports = router;
+
+const mongoose = require("mongoose");
+const genres = require("../utils/genres");
+
+const movieSchema = mongoose.Schema(
+  {
+    title: {
+      type: String,
+      trim: true,
+      required: true,
+    },
+    storyLine: {
+      type: String,
+      trim: true,
+      required: true,
+    },
+    director: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Actor",
+    },
+    releseDate: {
+      type: Date,
+      required: true,
+    },
+    status: {
+      type: String,
+      required: true,
+      enum: ["public", "private"],
+    },
+    type: {
+      type: String,
+      required: true,
+    },
+    genres: {
+      type: [String],
+      required: true,
+      enum: genres,
+    },
+    tags: {
+      type: [String],
+      required: true,
+    },
+    cast: [
+      {
+        actor: { type: mongoose.Schema.Types.ObjectId, ref: "Actor" },
+        roleAs: String,
+        leadActor: Boolean,
+      },
+    ],
+    writers: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Actor",
+      },
+    ],
+    poster: {
+      type: Object,
+      url: { type: String, required: true },
+      public_id: { type: String, required: true },
+      responsive: [URL],
+      required: true,
+    },
+    trailer: {
+      type: Object,
+      url: { type: String, required: true },
+      public_id: { type: String, required: true },
+      required: true,
+    },
+    reviews: [{ type: mongoose.Schema.Types.ObjectId, ref: "Review" }],
+    language: {
+      type: String,
+      required: true,
+    },
+  },
+  { timestamps: true }
+);
+
+module.exports = mongoose.model("Movie", movieSchema);
+
+
+
+// Ended at 7:44 7-1-2022
